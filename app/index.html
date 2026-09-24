@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>链藏 · 贴链接</title>
+</head>
+<body>
+  <h1>链藏</h1>
+  <form id="f">
+    <input id="url" type="text" placeholder="粘贴文章链接" style="width:60%">
+    <button type="submit">收录</button>
+  </form>
+  <p id="status"></p>
+  <script>
+    document.getElementById('f').addEventListener('submit', (e) => {
+      e.preventDefault();
+      document.getElementById('status').textContent = '功能开发中（D2 接抓取）';
+    });
+  </script>
+</body>
+</html>
