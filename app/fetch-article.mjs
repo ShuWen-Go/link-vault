@@ -8,7 +8,7 @@ function cleanUrl(raw) {
   return raw
     .trim()
     .replace(/[\u200B-\u200D\uFEFF\u2060]/g, '')
-    .replace(/[^A-Za-z0-9\-._~:\/?#$$$$@!$&'()*+,;=%]/g, '');
+    .replace(/[^A-Za-z0-9\-._~:\/?#\[\]@!$&'()*+,;=%]/g, '');
 }
 const url = cleanUrl(process.argv[2]);
 if (!url) {
@@ -63,6 +63,24 @@ if (!contentHtml) {
   process.exit(1);
 }
 
+// ④ 剥 HTML → 纯文本（D2 原版，误删后补回）
+function htmlToText(h) {
+  return h
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|h\d|li|section|tr)>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n\s*/g, '\n\n')
+    .trim();
+}
+
 // 坑#6：表格 → Markdown（零依赖手写，放最前：先消费掉 <table> 再剥其余标签）
 function tablesToMarkdown(h) {
   return h.replace(/<table[\s\S]*?<\/table>/gi, (table) => {
@@ -101,12 +119,12 @@ const title = pick(html, [
   /id="activity-name"[^>]*>([\s\S]*?)<\/h1>/,
 ]);
 const account = pick(html, [
-  /var nickname = htmlDecode$"([^"]+)"$/,
+  /var nickname = htmlDecode\("([^"]+)"\)/,
   /var nickname = "([^"]+)"/,
   /class="profile_nickname"[^>]*>([^<]+)</,
 ]);
 const author = pick(html, [
-  /var author = htmlDecode$"([^"]+)"$/,
+  /var author = htmlDecode\("([^"]+)"\)/,
   /var author = "([^"]+)"/,
 ]);
 const publishTime = pick(html, [
