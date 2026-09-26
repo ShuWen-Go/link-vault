@@ -213,7 +213,7 @@ async function handleStructure(req, res) {
     sendJson(req, res, 400, { error: '请求体不是合法 JSON' });
     return;
   }
-
+  handleStructure
   const url = typeof payload.url === 'string' ? payload.url : '';
   if (!url.trim()) {
     sendJson(req, res, 400, { error: 'url 不能为空' });
@@ -295,9 +295,18 @@ async function handleStructure(req, res) {
       return;
     }
 
+    // ⑥ 内容层判据（D5）：quotes 逐条与抓取原文做「去空白子串比对」
+    //    格式对齐 ≠ 内容对齐：结构 100% 合法，金句仍可能被改写 —— 这层抓的就是改写
+    const srcFlat = article.text.replace(/\s/g, '');
+    const quotesCheck = (checked.value.quotes || []).map((q) => ({
+      quote: q,
+      verified: srcFlat.includes(String(q).replace(/\s/g, '')),
+    }));
+
     // ⑤ 成功：卡片 + 可观测 meta（缓存命中 / finish_reason / 围栏 / token 拆账 / 耗时）
     sendJson(req, res, 200, {
       card: checked.value,
+      quotesCheck,
       meta: {
         url: article.url,
         hash: article.hash,
