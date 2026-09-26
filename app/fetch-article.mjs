@@ -3,11 +3,28 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 
-const url = process.argv[2];
+// 坑#7：URL 清洗（防御性：trim + 去零宽字符 + 只留合法 URL 字符）
+function cleanUrl(raw) {
+  return raw
+    .trim()
+    .replace(/[\u200B-\u200D\uFEFF\u2060]/g, '')
+    .replace(/[^A-Za-z0-9\-._~:\/?#$$$$@!$&'()*+,;=%]/g, '');
+}
+const url = cleanUrl(process.argv[2]);
 if (!url) {
   console.error('用法：node fetch-article.mjs "<文章URL>"');
   process.exit(1);
 }
+
+// 坑#4：幂等缓存 —— URL 哈希当文件名，本地已有就直接读档，不发请求
+const hash = crypto.createHash('sha256').update(url).digest('hex').slice(0, 12);
+const txtPath = `data/raw/${hash}.txt`;
+if (fs.existsSync(txtPath)) {
+  console.log(`⚡ 缓存命中 data/raw/${hash}.txt —— 本次零网络请求（幂等缓存生效）`);
+  console.log(fs.readFileSync(txtPath, 'utf8').slice(0, 300));
+  process.exit(0);
+}
+
 
 // ① 伪装成浏览器：身份由我们控制（这就是「自己派人去拿」）
 const headers = {
@@ -46,36 +63,66 @@ if (!contentHtml) {
   process.exit(1);
 }
 
-// ④ 剥 HTML → 纯文本（表格 v0 先不管，D3 处理）
-function htmlToText(h) {
-  return h
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|h\d|li|section|tr)>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n\s*\n\s*/g, '\n\n')
-    .trim();
+// 坑#6：表格 → Markdown（零依赖手写，放最前：先消费掉 <table> 再剥其余标签）
+function tablesToMarkdown(h) {
+  return h.replace(/<table[\s\S]*?<\/table>/gi, (table) => {
+    const rows = [...table.matchAll(/<tr[\s\S]*?<\/tr>/gi)].map((tr) => {
+      const cells = [...tr[0].matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)]
+        .map((c) => c[1]
+          .replace(/<[^>]+>/g, '')
+          .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+          .replace(/\s+/g, ' ').trim() || ' ');
+      return '| ' + cells.join(' | ') + ' |';
+    });
+    if (rows.length === 0) return '';
+    const cols = Math.max(rows[0].split('|').length - 2, 1);
+    rows.splice(1, 0, '|' + ' --- |'.repeat(cols));
+    return '\n' + rows.join('\n') + '\n';
+  });
 }
-const text = htmlToText(contentHtml);
+let work = tablesToMarkdown(contentHtml);
+// 坑#1：微信懒加载，真实地址在 data-src（先处理，避免 src 正则吃掉回写结果）
+work = work.replace(/<img[^>]*?data-src="([^"]+)"[^>]*>/gi, '\n![图]($1)\n');
+work = work.replace(/<img[^>]*?\ssrc="([^"]+)"[^>]*>/gi, '\n![图]($1)\n');
+const text = htmlToText(work);
 
-// ⑤ 标题（v0 简版：只取 og:title；多重正则兜底 D3 再做）
-const titleMatch = html.match(/<meta property="og:title" content="([^"]*)"/);
-const title = titleMatch ? titleMatch[1] : '(未取到标题)';
 
-// ⑥ 落盘：URL 哈希当文件名 —— D3 幂等缓存的伏笔
-const hash = crypto.createHash('sha256').update(url).digest('hex').slice(0, 12);
+// ⑤ 元数据（D3：多重正则兜底；取不到标「未取到」，不许编）
+function pick(h, patterns) {
+  for (const re of patterns) {
+    const m = h.match(re);
+    if (m && m[1] && m[1].trim()) return m[1].trim().replace(/\s+/g, ' ');
+  }
+  return '(未取到)';
+}
+const title = pick(html, [
+  /<meta property="og:title" content="([^"]*)"/,
+  /id="activity-name"[^>]*>([\s\S]*?)<\/h1>/,
+]);
+const account = pick(html, [
+  /var nickname = htmlDecode$"([^"]+)"$/,
+  /var nickname = "([^"]+)"/,
+  /class="profile_nickname"[^>]*>([^<]+)</,
+]);
+const author = pick(html, [
+  /var author = htmlDecode$"([^"]+)"$/,
+  /var author = "([^"]+)"/,
+]);
+const publishTime = pick(html, [
+  /var createTime = '([^']+)'/,
+  /var createTime = "([^"]+)"/,
+  /id="publish_time"[^>]*>([^<]+)</,
+  /property="article:published_time" content="([^"]*)"/,
+]);
+
+// ⑥ 落盘（hash 已在开头算好）：缓存里存的就是最终产物
 fs.mkdirSync('data/raw', { recursive: true });
 fs.writeFileSync(`data/raw/${hash}.html`, html);
-fs.writeFileSync(`data/raw/${hash}.txt`, `标题：${title}\nURL：${url}\n\n${text}`);
+fs.writeFileSync(txtPath,
+  `标题：${title}\n公众号：${account}\n作者：${author}\n发布时间：${publishTime}\nURL：${url}\n\n${text}`);
 
-console.log(`标题：${title}`);
-console.log(`正文 ${text.length} 字 → data/raw/${hash}.txt`);
+console.log(`标题：${title}\n公众号：${account}\n作者：${author}\n发布时间：${publishTime}`);
+console.log(`正文 ${text.length} 字 → ${txtPath}`);
 console.log('--- 正文前 300 字预览 ---');
 console.log(text.slice(0, 300));
