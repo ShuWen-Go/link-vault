@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
 // 把 file:// URL 转成本机路径，方便拼静态文件路径（仍是 Node 内置，不是 npm 包）
 import { fileURLToPath } from 'node:url';
+// D4：复用 D2/D3 的抓取模块（含幂等缓存 + URL 清洗 + 元数据兜底）
+import { fetchArticle } from './fetch-article.mjs';
 
 // 相对「本脚本文件」定位上一级目录的 .env，而不是相对终端当前工作目录
 // 这样无论你从哪一层文件夹执行 node server.mjs，都能找到仓库根目录的密钥文件
@@ -152,6 +154,176 @@ function serveStatic(req, res) {
   });
 }
 
+// ========== D4：结构化引擎 ==========
+// system 模板来自 W2-D4 定论：「强约束 + temperature 0」= 把任务从自由生成改成按字段填表。
+// ⚠️ 模板正文必须顶格写（行首空白会原样进 prompt），且不得含反引号 / ${
+const SYSTEM_PROMPT = `【角色】
+你是信息提取器。从用户给出的文章素材里提取信息，只输出一个 JSON 对象。
+
+【只输出 JSON】
+- 不要任何开场白、说明文字或结尾总结
+- 不要用小标题、加粗、列表符号等 markdown 排版
+- 不要用代码块标记把 JSON 包起来
+- 输出的第一个字符必须是 {，最后一个字符必须是 }
+
+【字段规范】必须包含且只包含这 4 个字段：
+- summary：字符串。用一句话概括全文主旨，不超过 60 字。
+- points：字符串数组。3 到 6 条核心观点或关键信息，每条不超过 30 字。
+- quotes：字符串数组。从素材中【逐字摘录】最有代表性的话，不要改写、不要换词、不要增删标点；找不到合适的就给空数组。
+- takeaways：字符串数组。读者可以直接照做的可执行要点；原文没有就给空数组。
+
+【占位规则】
+- 原文没写的信息就给空数组，不要根据常识或外部知识补充。
+- 只依据素材本身提取，素材里没有的就是没有。
+
+【书写要求】
+- 键名和字符串值都用半角双引号
+- 字符串内部不要换行；要分条就拆成数组元素`;
+
+// 结构层判据（W2-D4 三层判据之①）：剥代码围栏 + JSON.parse
+function checkJson(raw) {
+  let t = String(raw).trim();
+  const fenced = /^```/.test(t);
+  t = t.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  try {
+    return { ok: true, value: JSON.parse(t), fenced };
+  } catch (err) {
+    return { ok: false, message: err.message, fenced };
+  }
+}
+
+// 轻量内容校验：四字段类型对不对（这是「按字段填表」，不是自由生成）
+function checkCard(card) {
+  if (!card || typeof card !== 'object') return '不是 JSON 对象';
+  if (typeof card.summary !== 'string') return 'summary 缺失或不是字符串';
+  for (const key of ['points', 'quotes', 'takeaways']) {
+    if (!Array.isArray(card[key])) return key + ' 缺失或不是数组';
+  }
+  return null;
+}
+
+// 处理 POST /api/structure：URL → 抓取 → 强约束模板 → DeepSeek → 判据 → JSON 卡片
+async function handleStructure(req, res) {
+  let payload;
+  try {
+    const raw = await readBody(req);
+    payload = JSON.parse(raw || '{}');
+  } catch (err) {
+    console.error(err);
+    sendJson(req, res, 400, { error: '请求体不是合法 JSON' });
+    return;
+  }
+
+  const url = typeof payload.url === 'string' ? payload.url : '';
+  if (!url.trim()) {
+    sendJson(req, res, 400, { error: 'url 不能为空' });
+    return;
+  }
+
+  // ① 抓取（D2/D3 模块：幂等缓存命中则零网络请求）
+  let article;
+  try {
+    article = await fetchArticle(url);
+  } catch (err) {
+    console.error('抓取失败：', err.message);
+    sendJson(req, res, 502, { error: err.message });
+    return;
+  }
+
+  // ② 拼 prompt：元数据 + 素材全文
+  const userPrompt = `文章元数据：\n标题：${article.title}\n公众号：${article.account}\n发布时间：${article.publishTime}\n\n现在处理这篇文章的素材全文：\n${article.text}`;
+
+  const startedAt = Date.now();
+  try {
+    const response = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        temperature: 0, // 结构化字段名不能飘（W2-D4 定论）
+        max_tokens: 4000, // reasoning 从总额度里扣（实测 0–563 重尾），太小会吃光正文
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userPrompt },
+        ],
+      }),
+    });
+
+    const rawText = await response.text();
+    const elapsed = Math.round(Date.now() - startedAt);
+
+    if (!response.ok) {
+      console.error('DeepSeek 请求失败', response.status, rawText);
+      sendJson(req, res, 500, { error: '模型调用失败，请稍后重试' });
+      return;
+    }
+
+    const data = JSON.parse(rawText);
+    const choice = data?.choices?.[0];
+    const content = choice?.message?.content;
+    const finishReason = choice?.finish_reason;
+    const usage = data?.usage ?? {};
+
+    // 🚨 截断层（W2 结论）：max_tokens 吃光则正文 0 字——静默失败，必须显式检查
+    if (finishReason === 'length') {
+      console.error('输出被截断 finish_reason=length, usage=', usage);
+      sendJson(req, res, 502, { error: '模型输出被 max_tokens 截断（finish_reason=length），请重试' });
+      return;
+    }
+    if (typeof content !== 'string' || !content) {
+      console.error('DeepSeek 响应缺少 content', data);
+      sendJson(req, res, 500, { error: '模型返回字段不完整' });
+      return;
+    }
+
+    // ③ 结构层判据：剥围栏 + parse
+    const checked = checkJson(content);
+    if (!checked.ok) {
+      console.error('模型输出不是合法 JSON：', checked.message, '｜ 前 300 字：', content.slice(0, 300));
+      sendJson(req, res, 502, { error: '模型输出不是合法 JSON', rawPreview: content.slice(0, 200) });
+      return;
+    }
+
+    // ④ 字段类型校验
+    const cardError = checkCard(checked.value);
+    if (cardError) {
+      console.error('卡片字段不完整：', cardError, '｜ 前 300 字：', content.slice(0, 300));
+      sendJson(req, res, 502, { error: '卡片字段不完整：' + cardError, rawPreview: content.slice(0, 200) });
+      return;
+    }
+
+    // ⑤ 成功：卡片 + 可观测 meta（缓存命中 / finish_reason / 围栏 / token 拆账 / 耗时）
+    sendJson(req, res, 200, {
+      card: checked.value,
+      meta: {
+        url: article.url,
+        hash: article.hash,
+        title: article.title,
+        account: article.account,
+        author: article.author,
+        publishTime: article.publishTime,
+        textLength: article.text.length,
+        fromCache: article.fromCache,
+        finishReason: finishReason ?? null,
+        jsonFenced: checked.fenced,
+        usage: {
+          promptTokens: usage.prompt_tokens ?? null,
+          completionTokens: usage.completion_tokens ?? null,
+          reasoningTokens: usage.reasoning_tokens ?? null,
+          totalTokens: usage.total_tokens ?? null,
+        },
+        elapsed,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    sendJson(req, res, 500, { error: '转发请求失败，请稍后重试' });
+  }
+}
+
 // 处理 POST /api/chat：校验 messages 后原样转发给 DeepSeek
 async function handleChat(req, res) {
   // 用来装解析后的 JSON；声明在 try 外面方便校验
@@ -245,6 +417,16 @@ async function handleChat(req, res) {
 const server = http.createServer((req, res) => {
   // 只取路径，去掉 query，方便和 /api/chat 精确比较
   const pathname = (req.url ?? '/').split('?')[0];
+
+  // 结构化接口：只接受 POST（D4）
+  if (pathname === '/api/structure') {
+    if (req.method !== 'POST') {
+      sendJson(req, res, 400, { error: '请使用 POST 调用 /api/structure' });
+      return;
+    }
+    handleStructure(req, res);
+    return;
+  }
 
   // 聊天接口：只接受 POST
   if (pathname === '/api/chat') {

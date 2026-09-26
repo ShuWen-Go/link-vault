@@ -3,19 +3,97 @@
 <head>
   <meta charset="UTF-8">
   <title>链藏 · 贴链接</title>
+  <style>
+    body { font-family: system-ui, "Microsoft YaHei", sans-serif; max-width: 720px; margin: 24px auto; padding: 0 16px; color: #222; }
+    h1 { color: #c00000; margin-bottom: 4px; }
+    .sub { color: #888; font-size: 14px; margin-top: 0; }
+    form { display: flex; gap: 8px; margin-top: 16px; }
+    #url { flex: 1; padding: 9px 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+    button { background: #c00000; color: #fff; border: 0; border-radius: 6px; padding: 9px 22px; cursor: pointer; font-size: 14px; }
+    button:disabled { background: #999; cursor: wait; }
+    #status { color: #666; min-height: 1.5em; font-size: 14px; }
+    .err { color: #c00000; }
+    .card { border: 1px solid #e8d8d8; border-left: 4px solid #c00000; border-radius: 8px; padding: 16px 20px; margin-top: 12px; }
+    .meta { color: #888; font-size: 13px; }
+    .card h2 { font-size: 18px; margin: 6px 0 8px; }
+    .sec { margin-top: 14px; }
+    .sec > b { color: #c00000; font-size: 14px; }
+    .sec p { margin: 6px 0 0; }
+    ul { margin: 6px 0 0; padding-left: 20px; }
+    li { margin: 4px 0; }
+    .quote { border-left: 3px solid #c00000; margin: 8px 0 0; padding: 5px 10px; color: #444; font-style: italic; background: #faf5f5; border-radius: 0 4px 4px 0; }
+    .obs { margin-top: 14px; font-size: 12px; color: #999; border-top: 1px dashed #ddd; padding-top: 8px; line-height: 1.7; }
+  </style>
 </head>
 <body>
   <h1>链藏</h1>
+  <p class="sub">贴一个链接 → 自动抓取 → LLM 结构化（V1 · 本地版）</p>
   <form id="f">
-    <input id="url" type="text" placeholder="粘贴文章链接" style="width:60%">
-    <button type="submit">收录</button>
+    <input id="url" type="text" placeholder="粘贴微信公众号文章链接">
+    <button id="btn" type="submit">收录</button>
   </form>
   <p id="status"></p>
+  <div id="out"></div>
+
   <script>
-    document.getElementById('f').addEventListener('submit', (e) => {
+    const $ = (id) => document.getElementById(id);
+
+    $('f').addEventListener('submit', async (e) => {
       e.preventDefault();
-      document.getElementById('status').textContent = '功能开发中（D2 接抓取）';
+      const btn = $('btn');
+      $('status').textContent = '抓取并结构化中……（首次抓取 + 模型调用，约 10–60 秒）';
+      btn.disabled = true;
+      $('out').innerHTML = '';
+      try {
+        const r = await fetch('/api/structure', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: $('url').value }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
+        render(data);
+        $('status').textContent = '✅ 完成';
+      } catch (err) {
+        $('status').innerHTML = '<span class="err">❌ ' + esc(err.message) + '</span>';
+      } finally {
+        btn.disabled = false;
+      }
     });
+
+    // 防 XSS：所有进 HTML 的字符串先过一遍转义
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, (c) => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+      ));
+    }
+
+    function render({ card, meta }) {
+      const m = meta || {};
+      const u = m.usage || {};
+      const list = (arr) => (Array.isArray(arr) && arr.length)
+        ? '<ul>' + arr.map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>'
+        : '<p class="meta">（空 —— 原文没有）</p>';
+      const quotes = (Array.isArray(card.quotes) && card.quotes.length)
+        ? card.quotes.map((q) => '<div class="quote">「' + esc(q) + '」</div>').join('')
+        : '<p class="meta">（空 —— 原文没有合适的金句）</p>';
+
+      $('out').innerHTML =
+        '<div class="card">' +
+          '<div class="meta">' + esc(m.account || '') + ' · ' + esc(m.publishTime || '') +
+            ' · ' + (m.fromCache ? '⚡ 缓存命中' : '🌐 新抓取') + ' · 正文 ' + (m.textLength || 0) + ' 字</div>' +
+          '<h2>' + esc(m.title || '') + '</h2>' +
+          '<div class="sec"><b>一句话摘要</b><p>' + esc(card.summary || '未指定') + '</p></div>' +
+          '<div class="sec"><b>核心观点</b>' + list(card.points) + '</div>' +
+          '<div class="sec"><b>金句（逐字摘录）</b>' + quotes + '</div>' +
+          '<div class="sec"><b>可执行要点</b>' + list(card.takeaways) + '</div>' +
+          '<div class="obs">可观测：finish_reason=' + esc(m.finishReason) +
+            ' ｜ JSON 围栏=' + (m.jsonFenced ? '有 ⚠️' : '无') +
+            ' ｜ tokens：prompt ' + (u.promptTokens ?? '-') + ' / completion ' + (u.completionTokens ?? '-') +
+            ' / reasoning ' + (u.reasoningTokens ?? '-') + ' / 总 ' + (u.totalTokens ?? '-') +
+            ' ｜ 耗时 ' + (m.elapsed ?? '-') + ' ms ｜ hash=' + esc(m.hash || '') + '</div>' +
+        '</div>';
+    }
   </script>
 </body>
 </html>
