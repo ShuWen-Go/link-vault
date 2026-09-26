@@ -202,6 +202,41 @@ function checkCard(card) {
   return null;
 }
 
+// ========== D6：历史存储 ==========
+// 路径锚在「本脚本所在目录」，不管从哪个文件夹启动 server 都不会写错地方（D4 同款教训）
+const DATA_DIR = fileURLToPath(new URL('./data/articles', import.meta.url));
+const INDEX_PATH = fileURLToPath(new URL('./data/index.json', import.meta.url));
+
+// 读目录卡片盒；第一次用还没有文件就当空数组
+function loadIndex() {
+  try {
+    return JSON.parse(fs.readFileSync(INDEX_PATH, 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+// 存档：全量写 articles/<hash>.json，目录写 index.json（同 hash 去重，新的排最前）
+function saveHistory(article, card, quotesCheck) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const record = {
+    url: article.url, hash: article.hash,
+    title: article.title, account: article.account,
+    author: article.author, publishTime: article.publishTime,
+    savedAt: new Date().toISOString(),
+    card, quotesCheck,
+  };
+  fs.writeFileSync(`${DATA_DIR}/${article.hash}.json`, JSON.stringify(record, null, 2));
+  const index = loadIndex().filter((x) => x.hash !== article.hash);
+  index.unshift({
+    hash: article.hash, url: article.url,
+    title: article.title, account: article.account,
+    publishTime: article.publishTime, summary: card.summary,
+    savedAt: record.savedAt,
+  });
+  fs.writeFileSync(INDEX_PATH, JSON.stringify(index, null, 2));
+}
+
 // 处理 POST /api/structure：URL → 抓取 → 强约束模板 → DeepSeek → 判据 → JSON 卡片
 async function handleStructure(req, res) {
   let payload;
@@ -213,7 +248,6 @@ async function handleStructure(req, res) {
     sendJson(req, res, 400, { error: '请求体不是合法 JSON' });
     return;
   }
-  handleStructure
   const url = typeof payload.url === 'string' ? payload.url : '';
   if (!url.trim()) {
     sendJson(req, res, 400, { error: 'url 不能为空' });
@@ -302,6 +336,13 @@ async function handleStructure(req, res) {
       quote: q,
       verified: srcFlat.includes(String(q).replace(/\s/g, '')),
     }));
+
+    // ⑦ D6：结构化成功 → 落历史。存档失败只记日志，不让整次收录报错（用户已拿到卡）
+    try {
+      saveHistory(article, checked.value, quotesCheck);
+    } catch (err) {
+      console.error('历史写入失败：', err.message);
+    }
 
     // ⑤ 成功：卡片 + 可观测 meta（缓存命中 / finish_reason / 围栏 / token 拆账 / 耗时）
     sendJson(req, res, 200, {
@@ -434,6 +475,24 @@ const server = http.createServer((req, res) => {
       return;
     }
     handleStructure(req, res);
+    return;
+  }
+
+  // D6 历史列表：目录卡片盒原样给前端
+  if (pathname === '/api/history') {
+    sendJson(req, res, 200, loadIndex());
+    return;
+  }
+
+  // D6 历史详情：hash 只许 12 位十六进制（顺带挡掉路径乱写），读全量档案
+  const cardMatch = pathname.match(/^\/api\/card\/([0-9a-f]{12})$/);
+  if (cardMatch) {
+    try {
+      const record = JSON.parse(fs.readFileSync(`${DATA_DIR}/${cardMatch[1]}.json`, 'utf8'));
+      sendJson(req, res, 200, record);
+    } catch {
+      sendJson(req, res, 404, { error: '该条历史不存在' });
+    }
     return;
   }
 

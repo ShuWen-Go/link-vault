@@ -28,6 +28,12 @@
     .quote.bad { border-left-color: #c00000; background: #fdeaea; }
     .quote.bad .tag { color: #c00000; font-weight: bold; }
     .obs { margin-top: 14px; font-size: 12px; color: #999; border-top: 1px dashed #ddd; padding-top: 8px; line-height: 1.7; }
+    #hist { margin-top: 28px; }
+    .h-item { border: 1px solid #eee; border-radius: 6px; padding: 8px 12px; margin-top: 8px; cursor: pointer; }
+    .h-item:hover { border-color: #c00000; }
+    .h-item .t { font-weight: bold; }
+    .h-item .s { color: #888; font-size: 13px; margin-top: 2px; }
+
   </style>
 </head>
 <body>
@@ -39,6 +45,7 @@
   </form>
   <p id="status"></p>
   <div id="out"></div>
+  <div id="hist"><h2 style="font-size:16px;color:#c00000;">📚 收藏历史</h2><div id="hist-list"></div></div>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -58,6 +65,7 @@
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
         render(data);
+        loadHistory(); // D6：新收录成功后目录卡片盒立即刷新
         $('status').textContent = '✅ 完成';
       } catch (err) {
         $('status').innerHTML = '<span class="err">❌ ' + esc(err.message) + '</span>';
@@ -65,6 +73,51 @@
         btn.disabled = false;
       }
     });
+
+        // D6：点历史条目 → 直读全量档案复用 render 画卡（不调模型、零 token）
+        async function showCard(hash) {
+      $('status').textContent = '读取历史档案……';
+      try {
+        const r = await fetch('/api/card/' + hash);
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        render({
+          card: d.card,
+          quotesCheck: d.quotesCheck,
+          meta: {
+            url: d.url, hash: d.hash, title: d.title, account: d.account,
+            publishTime: d.publishTime, fromCache: true, finishReason: 'history（直读档案，未调模型）',
+          },
+        });
+        $('status').textContent = '✅ 历史档案';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } catch (err) {
+        $('status').innerHTML = '<span class="err">❌ ' + esc(err.message) + '</span>';
+      }
+    }
+
+    // D6：页面打开就拉目录卡片盒
+    async function loadHistory() {
+      const box = $('hist-list');
+      try {
+        const r = await fetch('/api/history');
+        const list = await r.json();
+        box.innerHTML = (Array.isArray(list) && list.length)
+          ? list.map((x) =>
+              '<div class="h-item" data-hash="' + esc(x.hash) + '">' +
+                '<div class="t">' + esc(x.title) + '</div>' +
+                '<div class="s">' + esc(x.account || '') + ' · ' + esc((x.savedAt || '').slice(0, 10)) + ' · ' + esc(x.summary || '') + '</div>' +
+              '</div>').join('')
+          : '<p class="meta">（还没有收藏）</p>';
+      } catch {
+        box.innerHTML = '<p class="meta">历史加载失败</p>';
+      }
+    }
+    $('hist-list').addEventListener('click', (e) => {
+      const item = e.target.closest('.h-item');
+      if (item) showCard(item.dataset.hash);
+    });
+    loadHistory();
 
     // 防 XSS：所有进 HTML 的字符串先过一遍转义
     function esc(s) {
