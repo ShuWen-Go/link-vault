@@ -12,7 +12,12 @@ import { fetchArticle } from './fetch-article.mjs';
 // 这样无论你从哪一层文件夹执行 node server.mjs，都能找到仓库根目录的密钥文件
 const envUrl = new URL('../.env', import.meta.url);
 // 以 UTF-8 读出整个 .env 文本
-const envText = await readFile(envUrl, 'utf8');
+let envText = '';
+try {
+  envText = await readFile(envUrl, 'utf8');
+} catch {
+  envText = '';
+}
 
 // 用来存放从 .env 解析出的键值对
 const env = {};
@@ -35,10 +40,10 @@ for (const rawLine of envText.split(/\r?\n/)) {
 }
 
 // 取出 DeepSeek 密钥
-const apiKey = env.DEEPSEEK_API_KEY;
+const apiKey = env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY;
 // 启动时没有密钥就直接退出，避免后面每次请求都失败
 if (!apiKey) {
-  throw new Error('未在上一级目录的 .env 中找到 DEEPSEEK_API_KEY');
+  throw new Error('未找到 DEEPSEEK_API_KEY：既不在上一级目录的 .env，也不在环境变量中');
 }
 
 // 本脚本所在目录 = 静态文件根目录（打开 / 就会找到这里的 index.html）
@@ -519,10 +524,10 @@ const server = http.createServer((req, res) => {
 
 // 监听端口抽成常量：日志文案跟着它走。
 // 否则将来改了端口、日志还在报旧端口 —— 又一处「看起来对了 ≠ 实际对了」。
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
-// 第二个参数 127.0.0.1 表示只本机可访问，密钥不会暴露到局域网
-server.listen(PORT, '127.0.0.1', () => {
+// 绑 0.0.0.0 = 监听所有网卡：云端容器才能被平台探到端口；本地跑时外网仍进不来
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`本地后端已启动：http://localhost:${PORT}`);
   console.log('打开上述地址即可看到当前目录的 index.html；POST /api/chat 会转发到 DeepSeek');
 });
