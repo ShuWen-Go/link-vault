@@ -468,7 +468,29 @@ async function handleChat(req, res) {
   }
 }
 
+// D4 用量防护：每 IP 频率限制（内存计数，重启即清零 —— 对演示产品够用）
+const rateMap = new Map();          // 键 = 客户端 IP，值 = 窗口内请求时间戳数组
+const RATE_LIMIT = 5;               // 每个窗口内允许的最大次数
+const RATE_WINDOW = 60 * 1000;      // 窗口长度：60 秒
+
+// 判定该 IP 本次是否超限：滚动窗口内记一笔，超过上限返回 true
+function isRateLimited(ip) {
+  const now = Date.now();
+  const list = (rateMap.get(ip) || []).filter(t => now - t < RATE_WINDOW);
+  list.push(now);
+  rateMap.set(ip, list);
+  return list.length > RATE_LIMIT;
+}
+
+// 取真实客户端 IP：云端在反向代理后面，真实 IP 在 x-forwarded-for 头的第一个
+function clientIp(req) {
+  const fwd = req.headers['x-forwarded-for'];
+  if (typeof fwd === 'string' && fwd.length > 0) return fwd.split(',')[0].trim();
+  return req.socket.remoteAddress || 'unknown';
+}
+
 // 创建 HTTP 服务器：按方法和路径分流
+
 const server = http.createServer((req, res) => {
   // 只取路径，去掉 query，方便和 /api/chat 精确比较
   const pathname = (req.url ?? '/').split('?')[0];
@@ -479,9 +501,14 @@ const server = http.createServer((req, res) => {
       sendJson(req, res, 400, { error: '请使用 POST 调用 /api/structure' });
       return;
     }
+    if (isRateLimited(clientIp(req))) {
+      sendJson(req, res, 429, { error: '操作太频繁，请稍后再试' });
+      return;
+    }
     handleStructure(req, res);
     return;
   }
+
 
   // D6 历史列表：目录卡片盒原样给前端
   if (pathname === '/api/history') {
