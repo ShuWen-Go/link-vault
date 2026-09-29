@@ -28,6 +28,9 @@
     .quote.bad { border-left-color: #c00000; background: #fdeaea; }
     .quote.bad .tag { color: #c00000; font-weight: bold; }
     .obs { margin-top: 14px; font-size: 12px; color: #999; border-top: 1px dashed #ddd; padding-top: 8px; line-height: 1.7; }
+    .exp { margin-top: 14px; background: #fff; color: #c00000; border: 1px solid #c00000; border-radius: 6px; padding: 7px 16px; font-size: 13px; cursor: pointer; }
+    .exp:hover { background: #c00000; color: #fff; }
+    .exp:disabled { opacity: .6; cursor: wait; }
     #hist { margin-top: 28px; }
     .h-item { border: 1px solid #eee; border-radius: 6px; padding: 8px 12px; margin-top: 8px; cursor: pointer; }
     .h-item:hover { border-color: #c00000; }
@@ -119,6 +122,33 @@
     });
     loadHistory();
 
+    // D1（S3）：导出当前卡片到 Obsidian vault（本地功能；云端会返回「仅本地可用」）
+    $('out').addEventListener('click', async (e) => {
+      const btn = e.target.closest('.exp');
+      if (!btn || btn.disabled) return;
+      const hash = btn.dataset.hash;
+      if (!hash) return;
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '导出中……';
+      try {
+        const r = await fetch('/api/export', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hash }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        btn.textContent = '✅ 已导出';
+        $('status').textContent = '✅ 已导出到 Obsidian：' + d.filePath;
+      } catch (err) {
+        btn.textContent = old;
+        $('status').innerHTML = '<span class="err">❌ 导出失败：' + esc(err.message) + '</span>';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     // 防 XSS：所有进 HTML 的字符串先过一遍转义
     function esc(s) {
       return String(s).replace(/[&<>"']/g, (c) => (
@@ -152,6 +182,7 @@
           '<div class="sec"><b>核心观点</b>' + list(card.points) + '</div>' +
           '<div class="sec"><b>金句（逐字摘录）</b>' + quotes + '</div>' +
           '<div class="sec"><b>可执行要点</b>' + list(card.takeaways) + '</div>' +
+          '<button class="exp" data-hash="' + esc(m.hash || '') + '">📤 导出到 Obsidian</button>' +
           '<div class="obs">可观测：finish_reason=' + esc(m.finishReason) +
             ' ｜ JSON 围栏=' + (m.jsonFenced ? '有 ⚠️' : '无') +
             ' ｜ tokens：prompt ' + (u.promptTokens ?? '-') + ' / completion ' + (u.completionTokens ?? '-') +

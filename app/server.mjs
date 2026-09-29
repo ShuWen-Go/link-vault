@@ -7,6 +7,8 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 // D4：复用 D2/D3 的抓取模块（含幂等缓存 + URL 清洗 + 元数据兜底）
 import { fetchArticle } from './fetch-article.mjs';
+// D1(S3)：导出到 Obsidian vault（只能本地跑——云端没有 vault 目录，会走错误分支）
+import { exportOne } from './export-obsidian.mjs';
 
 // 相对「本脚本文件」定位上一级目录的 .env，而不是相对终端当前工作目录
 // 这样无论你从哪一层文件夹执行 node server.mjs，都能找到仓库根目录的密钥文件
@@ -495,6 +497,40 @@ async function handleChat(req, res) {
   }
 }
 
+// ========== D1（S3）：导出到 Obsidian ==========
+// 处理 POST /api/export：把某篇结构化档案写成 vault 笔记（frontmatter + 双链 + 原文全文）
+// ⚠️ 这是「本地专属」能力：vault 在本机磁盘上，云端容器里没有 → 云端必走失败分支。
+//    接口如实报错、前端如实提示，不做假成功（本地过 ≠ 云端过，同样适用于"没有的能力"）
+async function handleExport(req, res) {
+  let payload;
+  try {
+    const raw = await readBody(req);
+    payload = JSON.parse(raw || '{}');
+  } catch (err) {
+    console.error(err);
+    sendJson(req, res, 400, { error: '请求体不是合法 JSON' });
+    return;
+  }
+  const hash = typeof payload.hash === 'string' ? payload.hash : '';
+  // hash 只许 12 位十六进制：既挡路径乱写，也保证只会读到 data/articles 下的档案
+  if (!/^[0-9a-f]{12}$/.test(hash)) {
+    sendJson(req, res, 400, { error: 'hash 不合法' });
+    return;
+  }
+  try {
+    const r = await exportOne(hash);
+    console.log('导出到 Obsidian：', r.filePath);
+    sendJson(req, res, 200, { ok: true, title: r.title, filePath: r.filePath });
+  } catch (err) {
+    console.error('导出失败：', err.message);
+    // ENOENT = 目标目录/盘符不存在（云端最典型）：给一句人能看懂的降级说明
+    const friendly = err.code === 'ENOENT'
+      ? '导出目标目录不可用：该功能仅在本地运行环境生效（云端没有 Obsidian 库）'
+      : '导出失败：' + err.message;
+    sendJson(req, res, 500, { error: friendly });
+  }
+}
+
 // D4 用量防护 · V1.5 修正：全局频率限制（内存计数，重启即清零）
 // 修正原因：云端实测闸门失效——平台反代后每个请求的 clientIp 都不同，
 // 按 IP 计数永远凑不满上限；演示产品改为全局计数，防刷语义 = 全站每分钟结构化次数封顶。
@@ -530,6 +566,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+
+  // D1（S3）导出到 Obsidian：只接受 POST
+  if (pathname === '/api/export') {
+    if (req.method !== 'POST') {
+      sendJson(req, res, 400, { error: '请使用 POST 调用 /api/export' });
+      return;
+    }
+    handleExport(req, res);
+    return;
+  }
 
   // D6 历史列表：目录卡片盒原样给前端
   if (pathname === '/api/history') {
