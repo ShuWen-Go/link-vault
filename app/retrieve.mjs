@@ -33,18 +33,31 @@ function bigrams(s) {
   return set;
 }
 
-function overlap(qGrams, tGrams) {
-  let hit = 0;
-  for (const g of qGrams) if (tGrams.has(g)) hit++;
-  return hit;
-}
-
-/** 关键词路：查询 bigram 覆盖率（分母是"查询"，与块长无关 → 长块不吃亏） */
+/**
+ * 关键词路：bigram 覆盖率，**按 IDF 加权**
+ * 为什么必须加权（实测踩坑）：朴素覆盖率下「深圳明天的天气怎么样」拿到 0.778 ——
+ * 因为「明天 / 天气 / 怎么」这类**通用词**在语料里到处都是，覆盖率被灌水。
+ * 加权后：通用词 idf 低、专有词（「1206.6」「MCP」）idf 高 ⇒ 只有**真实命中专有信息**才得高分。
+ * 注意：分母只统计"查询里出现过的 bigram"的 df，比全量统计省事，效果一致。
+ */
 export function keywordSearch(question, rows, k = TOP_K) {
-  const qg = bigrams(question);
-  if (qg.size === 0) return [];
+  const qg = [...bigrams(question)];
+  if (!qg.length) return [];
+
+  const idf = new Map();
+  for (const g of qg) {
+    let df = 0;
+    for (const r of rows) if (r.grams.has(g)) df++;
+    idf.set(g, Math.log((rows.length + 1) / (df + 1)));
+  }
+  const qTotal = qg.reduce((s, g) => s + idf.get(g), 0) || 1;
+
   return rows
-    .map((r) => ({ ...r, kscore: overlap(qg, r.grams) / qg.size }))
+    .map((r) => {
+      let hit = 0;
+      for (const g of qg) if (r.grams.has(g)) hit += idf.get(g);
+      return { ...r, kscore: hit / qTotal };
+    })
     .filter((r) => r.kscore > 0)
     .sort((a, b) => b.kscore - a.kscore)
     .slice(0, k);
