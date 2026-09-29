@@ -7,7 +7,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // vault 推文卡片目录（D1 导出产物；与 export-obsidian.mjs 保持同一默认值）
-const DEFAULT_VAULT_DIR = 'D:/Knowledge_base/AI Go/AI Go/15-参考项目/推文卡片';
+// 09-29：迁到独立知识库仓库；笔记按月份分子目录 ⇒ loadCorpus 需递归读
+const DEFAULT_VAULT_DIR = 'D:/Knowledge_base/AI知识库/10-推文卡片';
 
 // 切块参数（09-29 树纹确认：目标 500 字 / 块间回退 1 段做重叠）
 export const CHUNK_TARGET = 500;
@@ -164,11 +165,22 @@ export function chunkText(lines, { target = CHUNK_TARGET, overlap = CHUNK_OVERLA
  *   cardMode='merge'：卡片段与全文段混在一起切（对照方案）
  * @returns {Array<{file,title,account,publish,hash,url,chunks:string[],dropped:Array}>}
  */
+// 递归收集 .md（按月子目录后不能再只读一层）；跳过隐藏目录（.obsidian 等）
+function walkMarkdown(dir, out = []) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.name.startsWith('.')) continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) walkMarkdown(p, out);
+    else if (e.name.endsWith('.md')) out.push(p);
+  }
+  return out;
+}
+
 export function loadCorpus(vaultDir = DEFAULT_VAULT_DIR, { cardMode = 'block' } = {}) {
-  const files = fs.readdirSync(vaultDir).filter((f) => f.endsWith('.md'));
+  const files = walkMarkdown(vaultDir);
   const docs = [];
   for (const f of files) {
-    const note = parseNote(fs.readFileSync(path.join(vaultDir, f), 'utf8'));
+    const note = parseNote(fs.readFileSync(f, 'utf8'));
     if (note.fm.type === 'moc') continue; // 索引笔记不进语料
 
     let chunks;
@@ -187,7 +199,7 @@ export function loadCorpus(vaultDir = DEFAULT_VAULT_DIR, { cardMode = 'block' } 
     }
 
     docs.push({
-      file: f,
+      file: path.basename(f),
       title: note.title,
       account: note.fm.account || '',
       publish: note.fm.publish || '',

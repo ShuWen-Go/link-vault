@@ -14,11 +14,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const DATA_DIR = fileURLToPath(new URL('./data/articles/', import.meta.url));
 
 // vault 导出目标目录：默认写死，可用仓库根 .env 的 OBSIDIAN_DIR 覆盖
-// （放 .env 而不是每台机器改代码；D1 不依赖任何 Key，读不到 .env 也能跑）
-const DEFAULT_VAULT_DIR = 'D:/Knowledge_base/AI Go/AI Go/15-参考项目/推文卡片';
+// 09-29：迁到树纹新建的独立知识库仓库；笔记按「收录月份」分子目录（长期不会堆成一层）
+const DEFAULT_VAULT_DIR = 'D:/Knowledge_base/AI知识库/10-推文卡片';
 
-// 索引笔记名（双链锚点：[[推文卡片索引]]）——位于同一导出目录
+// 索引笔记名（双链锚点：[[推文卡片索引]]）
 const INDEX_NAME = '推文卡片索引';
+
+// 索引落点：仓库根下的 MOC 目录（索引与数据分离 —— MOC 集中放各类索引，卡片区只放笔记）
+const MOC_DIR_NAME = '50-MOC';
 
 // 抓取缓存目录：原文全文从这里读（articles/ 只存卡片，不存全文）
 const RAW_DIR = fileURLToPath(new URL('./data/raw/', import.meta.url));
@@ -48,12 +51,14 @@ async function resolveVaultDir() {
   return env.OBSIDIAN_DIR || DEFAULT_VAULT_DIR;
 }
 
-// 标题 → 合法文件名：去掉 Windows 非法字符 + Obsidian 双链特殊字符，折叠空白
+// 标题 → 合法文件名：Windows 非法字符统一换成短横 —— 直接删会把 "LangGraph/CrewAI"
+// 粘成 "LangGraphCrewAI"（读不出来）；Obsidian 双链特殊字符删掉；折叠空白
 // ⚠️ 文件名同时是双链锚点，索引里必须用同一个函数产出，两边才不会对不上
 function safeName(title) {
   return (
     String(title || 'untitled')
-      .replace(/[\\/:*?"<>|#^[\]]/g, '')
+      .replace(/[\\/:*?"<>|]/g, '-')
+      .replace(/[#^[\]]/g, '')
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 80) || 'untitled'
@@ -116,7 +121,7 @@ function buildNote(record, fullText = '') {
     'hash: ' + record.hash,
     'related:',
     '  - "[[' + INDEX_NAME + ']]"',
-    '  - "[[MOC-参考项目]]"',
+    '  - "[[00-说明]]"',
     '---',
     '',
     '# ' + (record.title || '(无标题)'),
@@ -148,7 +153,7 @@ function buildNote(record, fullText = '') {
     '## 关联',
     '',
     '- [[' + INDEX_NAME + ']]',
-    '- [[MOC-参考项目]]',
+    '- [[00-说明]]',
     '',
   ].join('\n');
 }
@@ -168,7 +173,7 @@ function buildIndex(records) {
     'status: done',
     'created: ' + localDate(),
     'related:',
-    '  - "[[MOC-参考项目]]"',
+    '  - "[[00-说明]]"',
     '---',
     '',
     '# 推文卡片索引',
@@ -182,7 +187,7 @@ function buildIndex(records) {
     '',
     '## 关联',
     '',
-    '- [[MOC-参考项目]]',
+    '- [[00-说明]]',
     '',
   ].join('\n');
 }
@@ -213,19 +218,21 @@ function loadFullText(hash) {
 export async function exportOne(hash, opts = {}) {
   const record = loadRecord(hash);
   const vaultDir = await resolveVaultDir();
+  // 按月分子目录（收录时间）：长期积累时不会把几十上百篇堆在同一层
+  const monthDir = path.join(vaultDir, String(record.savedAt || '').slice(0, 7) || 'unknown');
 
   // 文件名 = 清洗后的标题；同名但属于另一篇文章时，加 hash 短后缀避免互相覆盖
   let base = safeName(record.title);
-  let filePath = path.join(vaultDir, base + '.md');
+  let filePath = path.join(monthDir, base + '.md');
   const existingHash = fs.existsSync(filePath) ? readHashFromFile(filePath) : null;
   if (existingHash && existingHash !== record.hash) {
     base = base + '-' + record.hash.slice(0, 6);
-    filePath = path.join(vaultDir, base + '.md');
+    filePath = path.join(monthDir, base + '.md');
   }
 
   const content = buildNote(record, loadFullText(record.hash));
   if (!opts.dry) {
-    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.mkdirSync(monthDir, { recursive: true });
     fs.writeFileSync(filePath, content);
   }
   return { hash: record.hash, title: record.title, filePath, content, written: !opts.dry };
@@ -247,13 +254,15 @@ export async function exportAll(opts = {}) {
 
   const records = hashes.map((h) => loadRecord(h));
   const vaultDir = await resolveVaultDir();
+  // 索引进「仓库根/50-MOC/」：索引与数据分离，MOC 目录集中放各类索引
+  const mocDir = path.join(path.dirname(vaultDir), MOC_DIR_NAME);
   const index = {
-    filePath: path.join(vaultDir, INDEX_NAME + '.md'),
+    filePath: path.join(mocDir, INDEX_NAME + '.md'),
     content: buildIndex(records),
     written: !opts.dry,
   };
   if (!opts.dry) {
-    fs.mkdirSync(vaultDir, { recursive: true });
+    fs.mkdirSync(mocDir, { recursive: true });
     fs.writeFileSync(index.filePath, index.content);
   }
   return { entries, index };

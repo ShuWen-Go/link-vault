@@ -9,6 +9,11 @@ import { fileURLToPath } from 'node:url';
 import { fetchArticle } from './fetch-article.mjs';
 // D1(S3)：导出到 Obsidian vault（只能本地跑——云端没有 vault 目录，会走错误分支）
 import { exportOne } from './export-obsidian.mjs';
+// D5 前重构：结构化引擎独立成模块 —— 批量入库（ingest）与 HTTP 接口共用同一套 prompt + 判据
+// （静态 import 安全：structure.mjs 不依赖 node:sqlite）
+import { structureArticle } from './structure.mjs';
+// D5 前重构：档案读写独立成模块 —— 两处写入必须同格式
+import { DATA_DIR, loadIndex, saveHistory } from './store.mjs';
 
 // 相对「本脚本文件」定位上一级目录的 .env，而不是相对终端当前工作目录
 // 这样无论你从哪一层文件夹执行 node server.mjs，都能找到仓库根目录的密钥文件
@@ -161,88 +166,13 @@ function serveStatic(req, res) {
   });
 }
 
-// ========== D4：结构化引擎 ==========
-// system 模板来自 W2-D4 定论：「强约束 + temperature 0」= 把任务从自由生成改成按字段填表。
-// ⚠️ 模板正文必须顶格写（行首空白会原样进 prompt），且不得含反引号 / ${
-const SYSTEM_PROMPT = `【角色】
-你是信息提取器。从用户给出的文章素材里提取信息，只输出一个 JSON 对象。
+// ========== 结构化引擎 ==========
+// D5 前重构：SYSTEM_PROMPT / checkJson / checkCard / 模型调用 统一收进 app/structure.mjs
+// —— 批量入库（ingest.mjs）与 HTTP 接口共用同一套规则：两份 prompt 一定会各自漂移
 
-【只输出 JSON】
-- 不要任何开场白、说明文字或结尾总结
-- 不要用小标题、加粗、列表符号等 markdown 排版
-- 不要用代码块标记把 JSON 包起来
-- 输出的第一个字符必须是 {，最后一个字符必须是 }
-
-【字段规范】必须包含且只包含这 4 个字段：
-- summary：字符串。用一句话概括全文主旨，不超过 60 字。
-- points：字符串数组。3 到 6 条核心观点或关键信息，每条不超过 30 字。
-- quotes：字符串数组。从素材中【逐字摘录】最有代表性的话，不要改写、不要换词、不要增删标点；找不到合适的就给空数组。
-- takeaways：字符串数组。读者可以直接照做的可执行要点；原文没有就给空数组。
-
-【占位规则】
-- 原文没写的信息就给空数组，不要根据常识或外部知识补充。
-- 只依据素材本身提取，素材里没有的就是没有。
-
-【书写要求】
-- 键名和字符串值都用半角双引号
-- 字符串内部不要换行；要分条就拆成数组元素`;
-
-// 结构层判据（W2-D4 三层判据之①）：剥代码围栏 + JSON.parse
-function checkJson(raw) {
-  let t = String(raw).trim();
-  const fenced = /^```/.test(t);
-  t = t.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
-  try {
-    return { ok: true, value: JSON.parse(t), fenced };
-  } catch (err) {
-    return { ok: false, message: err.message, fenced };
-  }
-}
-
-// 轻量内容校验：四字段类型对不对（这是「按字段填表」，不是自由生成）
-function checkCard(card) {
-  if (!card || typeof card !== 'object') return '不是 JSON 对象';
-  if (typeof card.summary !== 'string') return 'summary 缺失或不是字符串';
-  for (const key of ['points', 'quotes', 'takeaways']) {
-    if (!Array.isArray(card[key])) return key + ' 缺失或不是数组';
-  }
-  return null;
-}
-
-// ========== D6：历史存储 ==========
-// 路径锚在「本脚本所在目录」，不管从哪个文件夹启动 server 都不会写错地方（D4 同款教训）
-const DATA_DIR = fileURLToPath(new URL('./data/articles', import.meta.url));
-const INDEX_PATH = fileURLToPath(new URL('./data/index.json', import.meta.url));
-
-// 读目录卡片盒；第一次用还没有文件就当空数组
-function loadIndex() {
-  try {
-    return JSON.parse(fs.readFileSync(INDEX_PATH, 'utf8'));
-  } catch {
-    return [];
-  }
-}
-
-// 存档：全量写 articles/<hash>.json，目录写 index.json（同 hash 去重，新的排最前）
-function saveHistory(article, card, quotesCheck) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const record = {
-    url: article.url, hash: article.hash,
-    title: article.title, account: article.account,
-    author: article.author, publishTime: article.publishTime,
-    savedAt: new Date().toISOString(),
-    card, quotesCheck,
-  };
-  fs.writeFileSync(`${DATA_DIR}/${article.hash}.json`, JSON.stringify(record, null, 2));
-  const index = loadIndex().filter((x) => x.hash !== article.hash);
-  index.unshift({
-    hash: article.hash, url: article.url,
-    title: article.title, account: article.account,
-    publishTime: article.publishTime, summary: card.summary,
-    savedAt: record.savedAt,
-  });
-  fs.writeFileSync(INDEX_PATH, JSON.stringify(index, null, 2));
-}
+// ========== 数据层 ==========
+// 档案读写（DATA_DIR / INDEX_PATH / loadIndex / saveHistory）统一收进 app/store.mjs
+// —— HTTP 接口与批量入库（ingest）必须写同一份档案格式，否则两处迟早分叉
 
 // 处理 POST /api/structure：URL → 抓取 → 强约束模板 → DeepSeek → 判据 → JSON 卡片
 async function handleStructure(req, res) {
@@ -270,9 +200,6 @@ async function handleStructure(req, res) {
     sendJson(req, res, 502, { error: err.message });
     return;
   }
-
-  // ② 拼 prompt：元数据 + 素材全文
-  const userPrompt = `文章元数据：\n标题：${article.title}\n公众号：${article.account}\n发布时间：${article.publishTime}\n\n现在处理这篇文章的素材全文：\n${article.text}`;
 
   // ①⑤ V1.5：结构化结果入缓存 —— 抓取幂等缓存只省了抓取层，LLM 每次照跑（重复花钱 + 偶发不稳定）。
   // 同 URL 已有档案（articles/<hash>.json）就直接读档返回，不再调模型。「能读档就不重算」（W3 结论）贯彻到结构化层。
@@ -303,85 +230,22 @@ async function handleStructure(req, res) {
     // 没有档案 = 第一次见这篇，继续走 LLM 结构化
   }
   try {
-    const response = await fetch('https://api.deepseek.com/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'deepseek-v4-flash',
-        temperature: 0, // 结构化字段名不能飘（W2-D4 定论）
-        max_tokens: 4000, // reasoning 从总额度里扣（实测 0–563 重尾），太小会吃光正文
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: userPrompt },
-        ],
-      }),
-    });
-
-    const rawText = await response.text();
+    // 重构后：模型调用 + 三层判据（结构层 / 字段层 / 内容层）统一由 structure.mjs 负责，
+    // 与批量入库 ingest.mjs 共用同一套 prompt 与校验 —— 规则只有一份，不会各自漂移
+    const result = await structureArticle(article, { apiKey });
     const elapsed = Math.round(Date.now() - startedAt);
 
-    if (!response.ok) {
-      console.error('DeepSeek 请求失败', response.status, rawText);
-      sendJson(req, res, 500, { error: '模型调用失败，请稍后重试' });
-      return;
-    }
-
-    const data = JSON.parse(rawText);
-    const choice = data?.choices?.[0];
-    const content = choice?.message?.content;
-    const finishReason = choice?.finish_reason;
-    const usage = data?.usage ?? {};
-
-    // 🚨 截断层（W2 结论）：max_tokens 吃光则正文 0 字——静默失败，必须显式检查
-    if (finishReason === 'length') {
-      console.error('输出被截断 finish_reason=length, usage=', usage);
-      sendJson(req, res, 502, { error: '模型输出被 max_tokens 截断（finish_reason=length），请重试' });
-      return;
-    }
-    if (typeof content !== 'string' || !content) {
-      console.error('DeepSeek 响应缺少 content', data);
-      sendJson(req, res, 500, { error: '模型返回字段不完整' });
-      return;
-    }
-
-    // ③ 结构层判据：剥围栏 + parse
-    const checked = checkJson(content);
-    if (!checked.ok) {
-      console.error('模型输出不是合法 JSON：', checked.message, '｜ 前 300 字：', content.slice(0, 300));
-      sendJson(req, res, 502, { error: '模型输出不是合法 JSON', rawPreview: content.slice(0, 200) });
-      return;
-    }
-
-    // ④ 字段类型校验
-    const cardError = checkCard(checked.value);
-    if (cardError) {
-      console.error('卡片字段不完整：', cardError, '｜ 前 300 字：', content.slice(0, 300));
-      sendJson(req, res, 502, { error: '卡片字段不完整：' + cardError, rawPreview: content.slice(0, 200) });
-      return;
-    }
-
-    // ⑥ 内容层判据（D5）：quotes 逐条与抓取原文做「去空白子串比对」
-    //    格式对齐 ≠ 内容对齐：结构 100% 合法，金句仍可能被改写 —— 这层抓的就是改写
-    const srcFlat = article.text.replace(/\s/g, '');
-    const quotesCheck = (checked.value.quotes || []).map((q) => ({
-      quote: q,
-      verified: srcFlat.includes(String(q).replace(/\s/g, '')),
-    }));
-
-    // ⑦ D6：结构化成功 → 落历史。存档失败只记日志，不让整次收录报错（用户已拿到卡）
+    // D6：结构化成功 → 落历史。存档失败只记日志，不让整次收录报错（用户已拿到卡）
     try {
-      saveHistory(article, checked.value, quotesCheck);
+      saveHistory(article, result.card, result.quotesCheck);
     } catch (err) {
       console.error('历史写入失败：', err.message);
     }
 
-    // ⑤ 成功：卡片 + 可观测 meta（缓存命中 / finish_reason / 围栏 / token 拆账 / 耗时）
+    // 成功：卡片 + 可观测 meta（缓存命中 / finish_reason / 围栏 / token 拆账 / 耗时）
     sendJson(req, res, 200, {
-      card: checked.value,
-      quotesCheck,
+      card: result.card,
+      quotesCheck: result.quotesCheck,
       meta: {
         url: article.url,
         hash: article.hash,
@@ -391,20 +255,16 @@ async function handleStructure(req, res) {
         publishTime: article.publishTime,
         textLength: article.text.length,
         fromCache: article.fromCache,
-        finishReason: finishReason ?? null,
-        jsonFenced: checked.fenced,
-        usage: {
-          promptTokens: usage.prompt_tokens ?? null,
-          completionTokens: usage.completion_tokens ?? null,
-          reasoningTokens: usage.reasoning_tokens ?? null,
-          totalTokens: usage.total_tokens ?? null,
-        },
+        finishReason: result.finishReason,
+        jsonFenced: result.jsonFenced,
+        usage: result.usage,
         elapsed,
       },
     });
   } catch (err) {
-    console.error(err);
-    sendJson(req, res, 500, { error: '转发请求失败，请稍后重试' });
+    // structure.mjs 抛出的都是可读中文原因，原样回给前端
+    console.error('结构化失败：', err.message);
+    sendJson(req, res, 502, { error: '结构化失败：' + err.message });
   }
 }
 
