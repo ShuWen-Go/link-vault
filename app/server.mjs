@@ -272,7 +272,34 @@ async function handleStructure(req, res) {
   // ② 拼 prompt：元数据 + 素材全文
   const userPrompt = `文章元数据：\n标题：${article.title}\n公众号：${article.account}\n发布时间：${article.publishTime}\n\n现在处理这篇文章的素材全文：\n${article.text}`;
 
+  // ①⑤ V1.5：结构化结果入缓存 —— 抓取幂等缓存只省了抓取层，LLM 每次照跑（重复花钱 + 偶发不稳定）。
+  // 同 URL 已有档案（articles/<hash>.json）就直接读档返回，不再调模型。「能读档就不重算」（W3 结论）贯彻到结构化层。
   const startedAt = Date.now();
+  try {
+    const cachedRecord = JSON.parse(fs.readFileSync(`${DATA_DIR}/${article.hash}.json`, 'utf8'));
+    if (cachedRecord && cachedRecord.card) {
+      console.log('结构化缓存命中（历史档案）：', article.hash);
+      sendJson(req, res, 200, {
+        card: cachedRecord.card,
+        quotesCheck: cachedRecord.quotesCheck ?? [],
+        meta: {
+          url: cachedRecord.url,
+          hash: cachedRecord.hash,
+          title: cachedRecord.title,
+          account: cachedRecord.account,
+          author: cachedRecord.author,
+          publishTime: cachedRecord.publishTime,
+          textLength: article.text.length,
+          fromCache: true,        // 前端按「缓存命中」显示
+          fromHistory: true,      // 精确标记：这次是读历史档案、没调 LLM
+          elapsed: Math.round(Date.now() - startedAt),
+        },
+      });
+      return;
+    }
+  } catch {
+    // 没有档案 = 第一次见这篇，继续走 LLM 结构化
+  }
   try {
     const response = await fetch('https://api.deepseek.com/chat/completions', {
       method: 'POST',
@@ -468,25 +495,19 @@ async function handleChat(req, res) {
   }
 }
 
-// D4 用量防护：每 IP 频率限制（内存计数，重启即清零 —— 对演示产品够用）
-const rateMap = new Map();          // 键 = 客户端 IP，值 = 窗口内请求时间戳数组
-const RATE_LIMIT = 5;               // 每个窗口内允许的最大次数
-const RATE_WINDOW = 60 * 1000;      // 窗口长度：60 秒
+// D4 用量防护 · V1.5 修正：全局频率限制（内存计数，重启即清零）
+// 修正原因：云端实测闸门失效——平台反代后每个请求的 clientIp 都不同，
+// 按 IP 计数永远凑不满上限；演示产品改为全局计数，防刷语义 = 全站每分钟结构化次数封顶。
+const rateHits = [];                // 当前窗口内的请求时间戳（全局共享一个队列）
+const RATE_LIMIT = 10;              // 全站每分钟允许的最大结构化次数
+const RATE_WINDOW = 60 * 1000;      // 窗口长度：60 秒（滚动窗口）
 
-// 判定该 IP 本次是否超限：滚动窗口内记一笔，超过上限返回 true
-function isRateLimited(ip) {
+// 判定本次是否超限：滑出窗口的旧时间戳先出队，再记入本次，超上限返回 true
+function isRateLimited() {
   const now = Date.now();
-  const list = (rateMap.get(ip) || []).filter(t => now - t < RATE_WINDOW);
-  list.push(now);
-  rateMap.set(ip, list);
-  return list.length > RATE_LIMIT;
-}
-
-// 取真实客户端 IP：云端在反向代理后面，真实 IP 在 x-forwarded-for 头的第一个
-function clientIp(req) {
-  const fwd = req.headers['x-forwarded-for'];
-  if (typeof fwd === 'string' && fwd.length > 0) return fwd.split(',')[0].trim();
-  return req.socket.remoteAddress || 'unknown';
+  while (rateHits.length && now - rateHits[0] >= RATE_WINDOW) rateHits.shift();
+  rateHits.push(now);
+  return rateHits.length > RATE_LIMIT;
 }
 
 // 创建 HTTP 服务器：按方法和路径分流
@@ -501,7 +522,7 @@ const server = http.createServer((req, res) => {
       sendJson(req, res, 400, { error: '请使用 POST 调用 /api/structure' });
       return;
     }
-    if (isRateLimited(clientIp(req))) {
+    if (isRateLimited()) {
       sendJson(req, res, 429, { error: '操作太频繁，请稍后再试' });
       return;
     }
