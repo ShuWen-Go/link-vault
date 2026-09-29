@@ -32,6 +32,14 @@
     .exp:hover { background: #c00000; color: #fff; }
     .exp:disabled { opacity: .6; cursor: wait; }
     #hist { margin-top: 28px; }
+    #qa { margin-top: 28px; }
+    #qa form { display: flex; gap: 8px; margin-top: 8px; }
+    #q { flex: 1; padding: 9px 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+    #qout .ans { border: 1px solid #e8d8d8; border-left: 4px solid #c00000; border-radius: 8px; padding: 14px 18px; margin-top: 12px; white-space: pre-wrap; line-height: 1.8; font-size: 14px; }
+    #qout .ans.degraded { border-left-color: #999; color: #777; background: #fafafa; }
+    #qout .src { margin-top: 10px; border-top: 1px dashed #ddd; padding-top: 8px; font-size: 13px; }
+    #qout .src > div { margin: 5px 0; color: #555; }
+    #qout .cite { color: #c00000; font-weight: bold; }
     .h-item { border: 1px solid #eee; border-radius: 6px; padding: 8px 12px; margin-top: 8px; cursor: pointer; }
     .h-item:hover { border-color: #c00000; }
     .h-item .t { font-weight: bold; }
@@ -48,6 +56,15 @@
   </form>
   <p id="status"></p>
   <div id="out"></div>
+  <div id="qa">
+    <h2 style="font-size:16px;color:#c00000;">🔍 问一问（基于已收藏的内容）</h2>
+    <form id="qf">
+      <input id="q" type="text" placeholder="例如：Embedding 和关键词搜索有什么区别？">
+      <button id="qbtn" type="submit">提问</button>
+    </form>
+    <p id="qstatus"></p>
+    <div id="qout"></div>
+  </div>
   <div id="hist"><h2 style="font-size:16px;color:#c00000;">📚 收藏历史</h2><div id="hist-list"></div></div>
 
   <script>
@@ -121,6 +138,51 @@
       if (item) showCard(item.dataset.hash);
     });
     loadHistory();
+
+    // D4（S3）：问一问 —— 提问 → 后端双路检索 + 带出处作答
+    $('qf').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const q = $('q').value.trim();
+      if (!q) return;
+      const btn = $('qbtn');
+      btn.disabled = true;
+      $('qstatus').textContent = '检索并作答中……（约 2–5 秒）';
+      $('qout').innerHTML = '';
+      try {
+        const r = await fetch('/api/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        renderAnswer(d);
+        $('qstatus').textContent = d.degraded ? '⛔ 语料里没有相关内容' : '✅ 完成';
+      } catch (err) {
+        $('qstatus').innerHTML = '<span class="err">❌ ' + esc(err.message) + '</span>';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // 出处展示：正文里 [n] 渲染成角标 + 底部来源列表 + 溯源校验告警
+    function renderAnswer(d) {
+      const body = esc(d.answer).replace(/\[(\d+)\]/g, (m, n) => '<span class="cite">[' + n + ']</span>');
+      let html = '<div class="ans' + (d.degraded ? ' degraded' : '') + '">' + body + '</div>';
+      if (Array.isArray(d.sources) && d.sources.length) {
+        html += '<div class="src"><b>来源</b>' + d.sources.map((s) =>
+          '<div>[' + s.n + '] ' + esc(s.title) + ' — ' + esc(s.account) + ' · ' + esc(s.publish) +
+          '（v=' + (s.vscore === null ? '-' : s.vscore.toFixed(3)) + ' k=' + (s.kscore === null ? '-' : s.kscore.toFixed(3)) + '）</div>'
+        ).join('') + '</div>';
+      }
+      if (d.check && Array.isArray(d.check.invalid) && d.check.invalid.length) {
+        html += '<p class="err">⚠️ 溯源校验：模型引用了不存在的来源 [' + d.check.invalid.join(',') + ']</p>';
+      }
+      if (d.check && d.check.noCitation) {
+        html += '<p class="err">⚠️ 模型认为资料不足以直接回答（未标注来源）</p>';
+      }
+      $('qout').innerHTML = html;
+    }
 
     // D1（S3）：导出当前卡片到 Obsidian vault（本地功能；云端会返回「仅本地可用」）
     $('out').addEventListener('click', async (e) => {

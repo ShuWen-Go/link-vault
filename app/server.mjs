@@ -565,6 +565,45 @@ async function handleEnv(req, res) {
   sendJson(req, res, 200, out);
 }
 
+// ========== D4（S3）：RAG 问答 ==========
+// 提问 → 双路检索 → 带出处 prompt → DeepSeek 作答 → 三防线
+// 🚨 同样用「动态 import」：ask → retrieve → rag-db 链路里有 node:sqlite，
+//    若静态引入，云端 Node < 22.5 时整个服务起不来（与 /api/env 同一套防护）
+async function handleAsk(req, res) {
+  let payload;
+  try {
+    payload = JSON.parse((await readBody(req)) || '{}');
+  } catch (err) {
+    console.error(err);
+    sendJson(req, res, 400, { error: '请求体不是合法 JSON' });
+    return;
+  }
+
+  const question = typeof payload.question === 'string' ? payload.question.trim() : '';
+  if (!question) {
+    sendJson(req, res, 400, { error: 'question 不能为空' });
+    return;
+  }
+  if (question.length > 200) {
+    sendJson(req, res, 400, { error: '问题太长（限 200 字）' });
+    return;
+  }
+
+  try {
+    const { ask } = await import('./ask.mjs');
+    // 复用启动时已读到的 Key，不再重复读盘
+    const r = await ask(question, { apiKey });
+    console.log(
+      `ask「${question.slice(0, 20)}」→ ${r.degraded ? '降级（语料无匹配）' : '作答'}` +
+        `（v=${r.vTop.toFixed(3)} k=${r.kTop.toFixed(3)}）`,
+    );
+    sendJson(req, res, 200, r);
+  } catch (err) {
+    console.error('ask 失败：', err.message);
+    sendJson(req, res, 500, { error: '问答失败：' + err.message });
+  }
+}
+
 // D4 用量防护 · V1.5 修正：全局频率限制（内存计数，重启即清零）
 // 修正原因：云端实测闸门失效——平台反代后每个请求的 clientIp 都不同，
 // 按 IP 计数永远凑不满上限；演示产品改为全局计数，防刷语义 = 全站每分钟结构化次数封顶。
@@ -608,6 +647,20 @@ const server = http.createServer((req, res) => {
       return;
     }
     handleExport(req, res);
+    return;
+  }
+
+  // D4（S3）RAG 问答：只接受 POST（与 /api/structure 共用全局限流 —— 两者都要花 LLM 额度）
+  if (pathname === '/api/ask') {
+    if (req.method !== 'POST') {
+      sendJson(req, res, 400, { error: '请使用 POST 调用 /api/ask' });
+      return;
+    }
+    if (isRateLimited()) {
+      sendJson(req, res, 429, { error: '操作太频繁，请稍后再试' });
+      return;
+    }
+    handleAsk(req, res);
     return;
   }
 
