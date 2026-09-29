@@ -531,6 +531,40 @@ async function handleExport(req, res) {
   }
 }
 
+// ========== D2（S3）：运行环境探测 ==========
+// 为什么要有这个接口：node:sqlite 需 Node ≥ 22.5，而线上环境版本未知。
+// 🚨 关键防护：SQLite 与 rag-db 一律「动态 import」，绝不在文件顶部静态引入 ——
+//    否则云端 Node 过低时，import 阶段就抛错 → 整个服务起不来（一个模块不兼容拖垮全站）。
+//    动态 import 把风险限制在这一个接口内：不支持就如实报告，服务照常跑。
+async function handleEnv(req, res) {
+  const out = {
+    node: process.version,
+    platform: process.platform,
+    sqlite: { supported: false },
+    ragIndex: { exists: false },
+  };
+
+  try {
+    const sqlite = await import('node:sqlite');
+    out.sqlite.supported = typeof sqlite.DatabaseSync === 'function';
+  } catch (err) {
+    out.sqlite.error = err.message;
+  }
+
+  try {
+    const rag = await import('./rag-db.mjs');
+    if (fs.existsSync(rag.DB_PATH)) {
+      const db = rag.openDb();
+      out.ragIndex = { exists: true, docs: rag.countDocs(db), chunks: rag.countChunks(db) };
+      db.close();
+    }
+  } catch (err) {
+    out.ragIndex.error = err.message;
+  }
+
+  sendJson(req, res, 200, out);
+}
+
 // D4 用量防护 · V1.5 修正：全局频率限制（内存计数，重启即清零）
 // 修正原因：云端实测闸门失效——平台反代后每个请求的 clientIp 都不同，
 // 按 IP 计数永远凑不满上限；演示产品改为全局计数，防刷语义 = 全站每分钟结构化次数封顶。
@@ -574,6 +608,12 @@ const server = http.createServer((req, res) => {
       return;
     }
     handleExport(req, res);
+    return;
+  }
+
+  // D2（S3）环境探测：Node 版本 / node:sqlite 是否可用 / 是否已有索引
+  if (pathname === '/api/env') {
+    handleEnv(req, res);
     return;
   }
 
