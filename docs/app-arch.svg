@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 508" width="100%" role="img" aria-labelledby="ttl desc">
+  <title id="ttl">链藏 app 目录：文件职责与数据流</title>
+  <desc id="desc">四层结构：前端 index.html；服务层 server.mjs；能力层三个已有模块 fetch-article / export-obsidian / corpus，三个待写模块 embed / rag-db / build-index；数据层 raw / articles / vault 推文卡片 / rag.sqlite</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect x="40" y="40" width="600" height="68" rx="12" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text x="56" y="54" font-size="12" fill="#5F5E5A" dominant-baseline="central">前端层 · 浏览器</text>
+  <rect x="56" y="68" width="568" height="32" rx="8" fill="#FCEBEB" stroke="#A32D2D" stroke-width="0.5"/>
+  <text x="68" y="84" font-size="13" fill="#501313" dominant-baseline="central">index.html — 用户界面；收录 / 历史 / 导出按钮都从这里发起</text>
+
+  <line x1="340" y1="110" x2="340" y2="122" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="350" y="117" font-size="12" fill="#5F5E5A" dominant-baseline="central">HTTP</text>
+
+  <rect x="40" y="124" width="600" height="68" rx="12" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text x="56" y="138" font-size="12" fill="#5F5E5A" dominant-baseline="central">服务层 · HTTP 服务</text>
+  <rect x="56" y="152" width="568" height="32" rx="8" fill="#FCEBEB" stroke="#A32D2D" stroke-width="0.5"/>
+  <text x="68" y="168" font-size="13" fill="#501313" dominant-baseline="central">server.mjs — 路由 / 限流 / 静态托管；转发 DeepSeek；把能力模块串成接口</text>
+
+  <line x1="340" y1="194" x2="340" y2="206" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="350" y="201" font-size="12" fill="#5F5E5A" dominant-baseline="central">import</text>
+
+  <rect x="40" y="208" width="600" height="176" rx="12" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text x="56" y="222" font-size="12" fill="#5F5E5A" dominant-baseline="central">能力层 · mjs 模块（各管一段流水线，可单独 CLI 跑）</text>
+
+  <rect x="56" y="236" width="176" height="56" rx="8" fill="#FCEBEB" stroke="#A32D2D" stroke-width="0.5"/>
+  <text x="70" y="256" font-size="13" fill="#501313" dominant-baseline="central">fetch-article.mjs</text>
+  <text x="70" y="275" font-size="12" fill="#A32D2D" dominant-baseline="central">抓正文+元数据+缓存</text>
+
+  <rect x="248" y="236" width="176" height="56" rx="8" fill="#FCEBEB" stroke="#A32D2D" stroke-width="0.5"/>
+  <text x="262" y="256" font-size="13" fill="#501313" dominant-baseline="central">export-obsidian.mjs</text>
+  <text x="262" y="275" font-size="12" fill="#A32D2D" dominant-baseline="central">卡片 → Obsidian 笔记</text>
+
+  <rect x="440" y="236" width="176" height="56" rx="8" fill="#FCEBEB" stroke="#A32D2D" stroke-width="0.5"/>
+  <text x="454" y="256" font-size="13" fill="#501313" dominant-baseline="central">corpus.mjs</text>
+  <text x="454" y="275" font-size="12" fill="#A32D2D" dominant-baseline="central">解析 / 清洗 / 切块</text>
+
+  <rect x="56" y="304" width="176" height="56" rx="8" fill="#FCEBEB" stroke="#A32D2D" stroke-width="0.5" stroke-dasharray="4 3"/>
+  <text x="70" y="324" font-size="13" fill="#501313" dominant-baseline="central">embed.mjs</text>
+  <text x="70" y="343" font-size="12" fill="#A32D2D" dominant-baseline="central">文本 → 向量（待写）</text>
+
+  <rect x="248" y="304" width="176" height="56" rx="8" fill="#FCEBEB" stroke="#A32D2D" stroke-width="0.5" stroke-dasharray="4 3"/>
+  <text x="262" y="324" font-size="13" fill="#501313" dominant-baseline="central">rag-db.mjs</text>
+  <text x="262" y="343" font-size="12" fill="#A32D2D" dominant-baseline="central">SQLite 存取（待写）</text>
+
+  <rect x="440" y="304" width="176" height="56" rx="8" fill="#FCEBEB" stroke="#A32D2D" stroke-width="0.5" stroke-dasharray="4 3"/>
+  <text x="454" y="324" font-size="13" fill="#501313" dominant-baseline="central">build-index.mjs</text>
+  <text x="454" y="343" font-size="12" fill="#A32D2D" dominant-baseline="central">建索引 CLI（待写）</text>
+
+  <line x1="340" y1="386" x2="340" y2="398" stroke="#888780" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="350" y="393" font-size="12" fill="#5F5E5A" dominant-baseline="central">落盘 / 读取</text>
+
+  <rect x="40" y="400" width="600" height="88" rx="12" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text x="56" y="414" font-size="12" fill="#5F5E5A" dominant-baseline="central">数据层 · 落盘产物</text>
+
+  <rect x="56" y="428" width="132" height="44" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="68" y="443" font-size="12" fill="#04342C" dominant-baseline="central">data/raw/</text>
+  <text x="68" y="460" font-size="12" fill="#0F6E56" dominant-baseline="central">抓取缓存 · 全文</text>
+
+  <rect x="200" y="428" width="132" height="44" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="212" y="443" font-size="12" fill="#04342C" dominant-baseline="central">data/articles/</text>
+  <text x="212" y="460" font-size="12" fill="#0F6E56" dominant-baseline="central">结构化卡片档案</text>
+
+  <rect x="344" y="428" width="132" height="44" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="356" y="443" font-size="12" fill="#04342C" dominant-baseline="central">vault 推文卡片/</text>
+  <text x="356" y="460" font-size="12" fill="#0F6E56" dominant-baseline="central">笔记 · RAG 语料源</text>
+
+  <rect x="488" y="428" width="132" height="44" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5" stroke-dasharray="4 3"/>
+  <text x="500" y="443" font-size="12" fill="#04342C" dominant-baseline="central">data/rag.sqlite</text>
+  <text x="500" y="460" font-size="12" fill="#0F6E56" dominant-baseline="central">向量索引（待写）</text>
+</svg>
