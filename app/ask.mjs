@@ -53,24 +53,77 @@ async function readDeepSeekKey() {
   return env.DEEPSEEK_API_KEY || process.env.DEEPSEEK_API_KEY || '';
 }
 
+// 统一的模型调用：三组对照（hybrid / keyword / none）共用同一处写法，避免 fetch 代码漂移
+async function chat(messages, key) {
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: MODEL,
+      temperature: 0, // 事实问答要稳，不要发挥
+      max_tokens: 4000, // reasoning 从总额度扣，留足
+      messages,
+    }),
+  });
+  const rawText = await res.text();
+  if (!res.ok) throw new Error(`DeepSeek 调用失败 HTTP ${res.status}：${rawText.slice(0, 200)}`);
+
+  const data = JSON.parse(rawText);
+  const choice = data?.choices?.[0];
+  const content = choice?.message?.content;
+  // 🚨 截断层（W2 结论）：max_tokens 吃光则正文 0 字 —— 静默失败必须显式检查
+  if (choice?.finish_reason === 'length') {
+    throw new Error('模型输出被 max_tokens 截断（finish_reason=length），请重试');
+  }
+  if (typeof content !== 'string' || !content.trim()) {
+    throw new Error('模型返回内容为空');
+  }
+  return { content: content.trim(), usage: data?.usage ?? null };
+}
+
 /**
- * 提问 → 双路检索 → 带出处作答
- * @returns {Promise<{answer, sources, degraded, reason, vTop, kTop, check}>}
+ * 提问 → 检索 → 带出处作答
+ * @param {string} question
+ * @param {{apiKey?: string, topN?: number, mode?: 'hybrid'|'keyword'|'none'}} opts
+ *   mode='hybrid'（默认，双路 RAG）｜'keyword'（只用关键词路，评测对照 B）｜'none'（不检索，基线对照 A）
+ * @returns {Promise<{answer, sources, degraded, mode, reason, vTop, kTop, check}>}
  */
-export async function ask(question, { apiKey, topN = TOP_N } = {}) {
-  const { fused, vHits, kHits } = await retrieve(question, { topN });
+export async function ask(question, { apiKey, topN = TOP_N, mode = 'hybrid' } = {}) {
+  const r = mode === 'none' ? { fused: [], vHits: [], kHits: [] } : await retrieve(question, { topN });
+  const fused = mode === 'keyword' ? r.kHits : r.fused;
 
   // 两路的最高分（用于降级判定 + 观测）
-  const vTop = vHits.length ? Math.max(...vHits.map((h) => h.vscore)) : 0;
-  const kTop = kHits.length ? Math.max(...kHits.map((h) => h.kscore)) : 0;
+  const vTop = r.vHits.length ? Math.max(...r.vHits.map((h) => h.vscore)) : 0;
+  const kTop = r.kHits.length ? Math.max(...r.kHits.map((h) => h.kscore)) : 0;
+
+  // —— 对照 A（基线）：不给资料、不加检索锁定 —— 测模型自身知识 / 编造倾向 ——
+  if (mode === 'none') {
+    const key0 = apiKey || (await readDeepSeekKey());
+    if (!key0) throw new Error('未找到 DEEPSEEK_API_KEY（.env 或环境变量）');
+    const { content: answer } = await chat(
+      [
+        { role: 'system', content: '你是知识助手，直接回答用户的问题。' },
+        { role: 'user', content: question },
+      ],
+      key0,
+    );
+    return {
+      answer, sources: [], degraded: false, mode, reason: '',
+      vTop: 0, kTop: 0,
+      check: { cited: [], invalid: [], noCitation: true },
+    };
+  }
 
   // —— 防线③：无匹配降级（先判，能省一次模型调用）——
-  if (!fused.length || (vTop < MIN_VECTOR && kTop < MIN_KEYWORD)) {
+  // 单路模式只用该路的分数判定；双路模式任一路够强即可
+  const hasEvidence = mode === 'keyword' ? kTop >= MIN_KEYWORD : vTop >= MIN_VECTOR || kTop >= MIN_KEYWORD;
+  if (!fused.length || !hasEvidence) {
     return {
       answer: '资料中没有找到相关内容。',
       sources: [],
       degraded: true,
-      reason: `向量最高分 ${vTop.toFixed(3)} < ${MIN_VECTOR}，关键词最高分 ${kTop.toFixed(3)} < ${MIN_KEYWORD}`,
+      mode,
+      reason: `向量最高 ${vTop.toFixed(3)}（阈值 ${MIN_VECTOR}）／关键词最高 ${kTop.toFixed(3)}（阈值 ${MIN_KEYWORD}）`,
       vTop,
       kTop,
       check: { cited: [], invalid: [], noCitation: false },
@@ -100,34 +153,13 @@ export async function ask(question, { apiKey, topN = TOP_N } = {}) {
   const key = apiKey || (await readDeepSeekKey());
   if (!key) throw new Error('未找到 DEEPSEEK_API_KEY（.env 或环境变量）');
 
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model: MODEL,
-      temperature: 0, // 事实问答要稳，不要发挥
-      max_tokens: 4000, // reasoning 从总额度扣，留足
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userPrompt },
-      ],
-    }),
-  });
-  const rawText = await res.text();
-  if (!res.ok) throw new Error(`DeepSeek 调用失败 HTTP ${res.status}：${rawText.slice(0, 200)}`);
-
-  const data = JSON.parse(rawText);
-  const choice = data?.choices?.[0];
-  const content = choice?.message?.content;
-  // 🚨 截断层（W2 结论）：max_tokens 吃光则正文 0 字 —— 静默失败必须显式检查
-  if (choice?.finish_reason === 'length') {
-    throw new Error('模型输出被 max_tokens 截断（finish_reason=length），请重试');
-  }
-  if (typeof content !== 'string' || !content.trim()) {
-    throw new Error('模型返回内容为空');
-  }
-
-  const answer = content.trim();
+  const { content: answer, usage } = await chat(
+    [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: userPrompt },
+    ],
+    key,
+  );
 
   // —— 防线②：溯源校验（代码层，不信模型自觉）——
   // 解析答案里出现的 [n]，与真实资料编号比对：越界 = 编造来源
@@ -147,7 +179,7 @@ export async function ask(question, { apiKey, topN = TOP_N } = {}) {
       cited: usedSources,
       invalid,                                  // 非空 = 模型编了不存在的来源
       noCitation: uniq.length === 0,            // true = 答案没标任何来源
-      usage: data?.usage ?? null,
+      usage,
     },
   };
 }
