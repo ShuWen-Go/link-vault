@@ -44,6 +44,8 @@ node server.mjs        # 打开 http://localhost:3000
 3. **一段流水线一个文件** —— 采集 / 交付 / 语料 / 向量化 / 存储 / 建索引，出问题能直接定位到"哪一段坏了"。
 4. **零依赖是红线** —— HTTP 用 `node:http`、SQLite 用 `node:sqlite`、抓取用内置 `fetch`，云端不用配 `npm install`。
 
+> 📄 **完整技术说明**（数据落点 / 数据库结构 / 完整数据链路 / 关键参数 / 更新触发清单）见 [`docs/TECH.md`](docs/TECH.md)。
+
 ## 部署
 
 - **线上地址**：<https://liancang.app.workbuddy.host/>
