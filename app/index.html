@@ -77,7 +77,7 @@
       btn.disabled = true;
       $('out').innerHTML = '';
       try {
-        const r = await fetch('/api/structure', {
+        const r = await fetch('api/structure', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: $('url').value }),
@@ -98,7 +98,7 @@
         async function showCard(hash) {
       $('status').textContent = '读取历史档案……';
       try {
-        const r = await fetch('/api/card/' + hash);
+        const r = await fetch('api/card/' + hash);
         const d = await r.json();
         if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
         render({
@@ -120,7 +120,7 @@
     async function loadHistory() {
       const box = $('hist-list');
       try {
-        const r = await fetch('/api/history');
+        const r = await fetch('api/history');
         const list = await r.json();
         box.innerHTML = (Array.isArray(list) && list.length)
           ? list.map((x) =>
@@ -149,7 +149,7 @@
       $('qstatus').textContent = '检索并作答中……（约 2–5 秒）';
       $('qout').innerHTML = '';
       try {
-        const r = await fetch('/api/ask', {
+        const r = await fetch('api/ask', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ question: q }),
@@ -194,7 +194,7 @@
       btn.disabled = true;
       btn.textContent = '导出中……';
       try {
-        const r = await fetch('/api/export', {
+        const r = await fetch('api/export', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ hash }),
